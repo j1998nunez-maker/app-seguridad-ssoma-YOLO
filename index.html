@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
-<title>Auditoría SSOMA IA</title>
+<title>Auditoría SSOMA IA v3</title>
 <style>
   :root {
     --bg: #111418; --panel: #1b2027; --line: #2c333d; --text: #e8ecf1; --muted: #9aa5b1;
@@ -28,7 +28,7 @@
          border-radius: 8px; padding: 10px 4px; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--muted); }
   .petar-group input[type="radio"] { display: none; }
   .petar-group label:has(input[type="radio"]:checked) {
-    border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.14);
+    border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.15);
   }
 
   input[type=file] { display: none; }
@@ -61,7 +61,7 @@
 </head>
 <body>
 <header>
-  <h1>⛑️ Auditoría SSOMA IA <span class="nota">v2 PETAR</span></h1>
+  <h1>⛑️ Auditoría SSOMA IA <span class="nota">v3 PETAR</span></h1>
   <div id="estado">Cargando motor de IA…</div>
 </header>
 <main>
@@ -85,7 +85,7 @@
   <div class="leyenda">
     <span><i style="background:var(--ok)"></i>OK</span>
     <span><i style="background:var(--warn)"></i>Falta EPP</span>
-    <span><i style="background:var(--danger)"></i>Línea de fuego / Peligro</span>
+    <span><i style="background:var(--danger)"></i>Línea de fuego / Chispas</span>
     <span><i style="background:#eab308"></i>Tercero / Verificar</span>
   </div>
 
@@ -150,6 +150,6 @@
   </details>
 </main>
 <script src="lib/ort.wasm.min.js"></script>
-<script src="app.js"></script>
+<script src="app.js?v=3"></script>
 </body>
 </html>

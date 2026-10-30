@@ -1,10 +1,10 @@
 'use strict';
 /* =====================================================================
-   Auditoría SSOMA IA – v2 PETAR (Caliente / Lavado / Pegado / Estándar)
-   - Corrige falso positivo de Gloves en la cabeza
-   - Detecta cono de chispas como Zona de Peligro (Línea de Fuego)
-   - Detecta trabajadores secundarios/agachados al fondo
-   - Audita Casco, Traje de Cuero (descarne), Careta/Respirador y Guantes
+   Auditoría SSOMA IA – v3 PETAR
+   - Resuelve contradicción Gloves vs No-Gloves en guantes de cuero bicolores
+   - Evalúa Traje de Cuero (descarne) vs Casaca común (No-Vest)
+   - Exige Careta Facial y Casco en trabajos en caliente
+   - Detecta haces y conos de chispas como Zona de Peligro (Línea de Fuego)
    ===================================================================== */
 const S = 640;
 const P = 160;
@@ -31,7 +31,6 @@ const CATEGORIAS = {
 };
 const COCO_NOMBRES = { 0: 'person', 2: 'car', 5: 'bus', 7: 'truck' };
 const COCO_CLASES = new Set([0, 2, 5, 7]);
-
 const EPP_LISTA = ['casco', 'chaleco', 'guantes', 'botas', 'traje_cuero', 'traje_tyvek', 'careta', 'respirador'];
 
 function petarActual() {
@@ -108,7 +107,7 @@ function actualizarInfo() {
   $('infoModelos').textContent =
     `COCO: ${sesCoco ? 'cargado ✅' : 'no cargado'} · EPP: ${sesEpp ? 'cargado ✅' : 'NO cargado'}` +
     (eppNC !== null && eppNC !== n ? ` · ⚠️ modelo de ${eppNC} clases` : '');
-  estado(sesCoco ? (sesEpp ? 'Listo ✅ (Auditoría PETAR activa)' : 'Listo COCO') : 'Error modelo COCO');
+  estado(sesCoco ? (sesEpp ? 'Listo ✅ (Auditoría v3 PETAR activa)' : 'Listo COCO') : 'Error modelo COCO');
 }
 
 async function iniciar() {
@@ -145,8 +144,7 @@ function preparar(src, W, H) {
   ctx640.fillStyle = 'rgb(114,114,114)';
   ctx640.fillRect(0, 0, S, S);
   ctx640.drawImage(src, 0, 0, W, H, px, py, nw, nh);
-  const imgData = ctx640.getImageData(0, 0, S, S);
-  const d = imgData.data;
+  const d = ctx640.getImageData(0, 0, S, S).data;
   const n = S * S, f = new Float32Array(3 * n);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     f[i] = d[j] / 255; f[n + i] = d[j + 1] / 255; f[2 * n + i] = d[j + 2] / 255;
@@ -245,12 +243,21 @@ async function inferir(ses, lb, conf, permitidas, nombres) {
   return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, nombres)), nc };
 }
 
-// ---------- Reglas de Seguridad y Detección de Chispas / Línea de Fuego ----------
+// ---------- Reglas de Seguridad y Corrección de Falsos Positivos ----------
 const centro = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 function dentro(p, b, tercioSup) {
   let [x1, y1, x2, y2] = b;
   if (tercioSup) { const h = b[3] - b[1]; y2 = y1 + h * 0.35; y1 -= h * 0.10; }
   return p[0] >= x1 && p[0] <= x2 && p[1] >= y1 && p[1] <= y2;
+}
+
+// Verifica si dos cajas se tocan o pertenecen a la misma extremidad/guante
+function cajasConectadas(a, b) {
+  const mx = Math.max(a[2] - a[0], b[2] - b[0]) * 0.35;
+  const my = Math.max(a[3] - a[1], b[3] - b[1]) * 0.35;
+  const w = Math.max(0, Math.min(a[2] + mx, b[2] + mx) - Math.max(a[0] - mx, b[0] - mx));
+  const h = Math.max(0, Math.min(a[3] + my, b[3] + my) - Math.max(a[1] - my, b[1] - my));
+  return w > 0 && h > 0;
 }
 
 function dilatar(m, r) {
@@ -271,41 +278,58 @@ function dilatar(m, r) {
   }
 }
 
-// Detecta focos de chispas incandescentes (esmerilado / soldadura) en la grilla 160x160
+// Detecta haces y conos de chispas incandescentes
 function detectarChispas(lb, zona) {
   const d = lb.raw;
   let puntosChispa = 0;
   const chispas = new Uint8Array(P * P);
-  for (let y = 0; y < P; y++) {
+  for (let y = 1; y < P - 1; y++) {
     const sy = y * 4;
-    if (sy < lb.py || sy >= lb.py + lb.nh) continue;
-    for (let x = 0; x < P; x++) {
+    if (sy < lb.py + 8 || sy >= lb.py + lb.nh - 8) continue;
+    for (let x = 1; x < P - 1; x++) {
       const sx = x * 4;
-      if (sx < lb.px || sx >= lb.px + lb.nw) continue;
-      // Busca núcleo brillante amarillo/naranja rodeado de halo cálido
+      if (sx < lb.px + 8 || sx >= lb.px + lb.nw - 8) continue;
       const idx = (sy * S + sx) * 4;
       const r = d[idx], g = d[idx + 1], b = d[idx + 2];
-      if (r > 235 && g > 140 && b < 120 && (r - b) > 130) {
+      // Captura chispas naranjas/amarillas intensas con alto contraste cálido
+      if (r > 220 && g > 115 && b < 115 && (r - b) > 115 && r >= g) {
         chispas[y * P + x] = 1;
         puntosChispa++;
       }
     }
   }
-  // Si hay un cono real de chispas (> 18 celdas activas), lo convierte en Zona de Peligro
-  if (puntosChispa > 18) {
+  if (puntosChispa >= 10) {
     for (let i = 0; i < P * P; i++) if (chispas[i]) zona[i] = 1;
     return true;
   }
   return false;
 }
 
+// Evalúa si el torso de la persona tiene color de cuero de descarne (amarillo/ocre) o casaca común
+function torsoPareceCuero(pMask, lb) {
+  const d = lb.raw;
+  let tot = 0, cuero = 0;
+  for (let y = 0; y < P; y++) {
+    for (let x = 0; x < P; x++) {
+      if (!pMask[y * P + x]) continue;
+      const idx = (y * 4 * S + x * 4) * 4;
+      const r = d[idx], g = d[idx + 1], b = d[idx + 2];
+      tot++;
+      // Rango cromático típico del cuero/descarne amarillo-ocre de soldador
+      if (r > 135 && g > 95 && b < 95 && (r - b) > 55 && r >= g * 0.9) cuero++;
+    }
+  }
+  return tot > 20 && (cuero / tot) > 0.24;
+}
+
 function analizar(dets, lb, margenPct) {
   const modo = petarActual();
   const PP = P * P, zona = new Uint8Array(PP);
   let hayFocoPeligro = false;
-
-  // 1. Elimina falsos positivos de "Gloves" en la cabeza de las personas (ej. capucha azul)
   const personasRaw = dets.filter((d) => d.cat === 'persona');
+
+  // 1. Filtra falsos positivos de guantes:
+  //    a) Elimina "Gloves" en la cabeza (ej. capucha azul)
   for (let i = dets.length - 1; i >= 0; i--) {
     const d = dets[i];
     if (d.cat === 'guantes') {
@@ -314,11 +338,26 @@ function analizar(dets, lb, margenPct) {
         const h = p.box[3] - p.box[1];
         return c[0] >= p.box[0] && c[0] <= p.box[2] && c[1] >= p.box[1] && c[1] <= p.box[1] + h * 0.28;
       });
-      if (enCabeza) dets.splice(i, 1); // Descarta guante falso en la cabeza
+      if (enCabeza) dets.splice(i, 1);
     }
   }
 
-  // 2. Construye Zona de Peligro (Maquinaria o Cono de Chispas en Caliente)
+  //    b) Resuelve contradicción Gloves vs No-Gloves en guantes de cuero bicolores (puño azul + palma cuero naranja)
+  const guantesValidos = dets.filter((d) => d.cat === 'guantes');
+  for (let i = dets.length - 1; i >= 0; i--) {
+    const d = dets[i];
+    if (d.cat === 'sin_guantes') {
+      const pegadoAGuante = guantesValidos.some((g) => cajasConectadas(d.box, g.box));
+      if (pegadoAGuante) {
+        // Une la máscara de la palma de cuero al guante válido y elimina la falsa infracción
+        const g = guantesValidos.find((x) => cajasConectadas(d.box, x.box));
+        for (let k = 0; k < Q * Q; k++) if (d.maskHi[k]) g.maskHi[k] = 1;
+        dets.splice(i, 1);
+      }
+    }
+  }
+
+  // 2. Construye Zona de Peligro (Maquinaria o Chispas de Esmerilado)
   for (const d of dets) {
     if (d.cat !== 'maquina') continue;
     hayFocoPeligro = true;
@@ -332,7 +371,6 @@ function analizar(dets, lb, margenPct) {
     if (r > 0) dilatar(zona, r);
   }
 
-  // 3. Verifica si el modelo ONNX ya incluye las clases nuevas o solo las 8 básicas
   const listaClases = nombresEpp().map((c) => categoria(c));
   const modeloTieneCuero = listaClases.includes('traje_cuero');
   const modeloTieneCareta = listaClases.includes('careta') || listaClases.includes('respirador');
@@ -346,10 +384,9 @@ function analizar(dets, lb, margenPct) {
 
     const lejos = (b[3] - b[1]) < 0.14 * lb.H;
     const tieneCasco = hay('casco', true) && !hay('sin_casco', false);
-    const tieneGuantes = hay('guantes', false) || (!hay('sin_guantes', false) && lejos);
-    const tieneBotas = !hay('sin_botas', false);
+    const faltaGuantes = hay('sin_guantes', false) && !hay('guantes', false);
+    const faltaBotas = hay('sin_botas', false);
 
-    // Evaluación según el Frente PETAR seleccionado
     const faltas = [];
     let sinCasco = false, sinTorso = false, sinFacial = false, sinGuantes = false, sinBotas = false;
 
@@ -357,21 +394,24 @@ function analizar(dets, lb, margenPct) {
       sinCasco = true;
       faltas.push('casco');
     }
-    if (hay('sin_guantes', false)) {
+    if (faltaGuantes && !lejos) {
       sinGuantes = true;
       faltas.push('guantes');
     }
-    if (!tieneBotas) {
+    if (faltaBotas && !lejos) {
       sinBotas = true;
       faltas.push('botas');
     }
 
     if (modo === 'esmerilado') {
-      // Trabajo en caliente: exige traje de cuero y careta facial (NO exige chaleco reflectante)
-      const tieneCuero = modeloTieneCuero ? hay('traje_cuero', false) : false;
+      // Verifica si lleva traje de cuero (por clase ONNX o por cobertura de descarne sin No-Vest)
+      const tieneCuero = modeloTieneCuero
+        ? hay('traje_cuero', false)
+        : (!hay('sin_chaleco', false) && torsoPareceCuero(p.mask, lb));
       const tieneCareta = modeloTieneCareta ? (hay('careta', true) || hay('respirador', true)) : false;
+
       if (!tieneCuero && !lejos) { sinTorso = true; faltas.push('traje cuero'); }
-      if (!tieneCareta && !lejos) { sinFacial = true; faltas.push('careta'); }
+      if (!tieneCareta && !lejos) { sinFacial = true; faltas.push('careta facial'); }
     } else if (modo === 'lavado') {
       const tieneTyvek = listaClases.includes('traje_tyvek') ? hay('traje_tyvek', false) : false;
       const tieneCareta = modeloTieneCareta ? (hay('careta', true) || hay('respirador', true)) : false;
@@ -383,7 +423,6 @@ function analizar(dets, lb, margenPct) {
       if (!tieneTyvek && !lejos) { sinTorso = true; faltas.push('traje químico'); }
       if (!tieneResp && !lejos) { sinFacial = true; faltas.push('Full-Face'); }
     } else {
-      // Modo Estándar
       const tieneChaleco = hay('chaleco', false) && !hay('sin_chaleco', false);
       if (!tieneChaleco && !lejos) { sinTorso = true; faltas.push('chaleco'); }
     }
@@ -411,7 +450,8 @@ const RGB = {
 const hex = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 const CAT_EPP = {
   casco: RGB.epp, chaleco: RGB.epp, guantes: RGB.epp, botas: RGB.epp,
-  traje_cuero: RGB.epp, traje_tyvek: RGB.epp, careta: RGB.epp, respirador: RGB.epp
+  traje_cuero: RGB.epp, traje_tyvek: RGB.epp, careta: RGB.epp, respirador: RGB.epp,
+  sin_casco: RGB.infra, sin_guantes: RGB.infra, sin_botas: RGB.infra
 };
 
 let ocupados = [];
@@ -466,7 +506,7 @@ function dibujar(src, lb, dets, an, verMascaras) {
   const img = cctx.createImageData(Q, Q), px = img.data;
   const zonaHi = new Uint8Array(Q * Q);
   for (let i = 0; i < Q * Q; i++) zonaHi[i] = an.zona[((i / Q | 0) >> 1) * P + ((i % Q) >> 1)];
-  pintarPoligono(px, zonaHi, RGB.zona, 75, 1); // Polígono rojo sobre cono de chispas / peligro
+  pintarPoligono(px, zonaHi, RGB.zona, 75, 1);
   for (const d of dets) if (d.cat === 'maquina') pintarPoligono(px, d.maskHi, RGB.maquina, 50, 1);
   for (const p of an.personas) pintarPoligono(px, p.maskHi, p.rgb, 95, 1);
   if (verMascaras) {
@@ -479,8 +519,10 @@ function dibujar(src, lb, dets, an, verMascaras) {
   ocupados = [];
   const fs = Math.max(12, Math.round(W / 48));
   if (verMascaras) {
-    for (const d of dets) if (CAT_EPP[d.cat])
-      etiqueta(vctx, d.nombre, d.box[0] * k, d.box[1] * k, hex(CAT_EPP[d.cat]), Math.round(fs * 0.75));
+    for (const d of dets) if (CAT_EPP[d.cat]) {
+      const lbl = (d.cat === 'sin_chaleco' && petarActual() === 'esmerilado') ? 'Sin-Traje-Cuero' : d.nombre;
+      etiqueta(vctx, lbl, d.box[0] * k, d.box[1] * k, hex(CAT_EPP[d.cat]), Math.round(fs * 0.75));
+    }
   }
   for (const p of an.personas) etiqueta(vctx, p.txt, p.box[0] * k, p.box[1] * k, hex(p.rgb), Math.round(fs * 0.88), true);
   etiqueta(vctx, `Modo: ${petarActual().toUpperCase()} · Personas: ${an.personas.length} · Alertas: ${alertas}`, 6, fs + 10, '#fff', Math.round(fs * 1.1));
@@ -610,7 +652,6 @@ async function procesar(src, W0, H0) {
   return n;
 }
 
-// Re-analiza automáticamente la misma foto al cambiar de botón PETAR
 document.querySelectorAll('input[name="petar"]').forEach((el) => {
   el.onchange = () => {
     actualizarEtiquetasKPI();

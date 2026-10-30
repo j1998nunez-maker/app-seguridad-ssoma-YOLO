@@ -15,33 +15,54 @@ const estado = (msg) => { $('estado').textContent = msg; };
 
 // ---------- Categorías y Matriz de EPP ----------
 const CATEGORIAS = {
-  persona: ['person', 'persona', 'worker', 'trabajador'],
-  casco:   ['helmet', 'hardhat', 'hard-hat', 'casco'],
-  chaleco: ['vest', 'chaleco'],
-  guantes: ['glove', 'guante'],
-  botas:   ['shoe', 'boot', 'bota', 'calzado', 'zapato'],
-  maquina: ['truck', 'excavator', 'loader', 'dozer', 'machinery', 'vehicle', 'bus', 'car', 'camion', 'maquina'],
+  persona:     ['person', 'persona', 'worker', 'trabajador'],
+  casco:       ['helmet', 'hardhat', 'hard-hat', 'casco'],
+  chaleco:     ['vest', 'chaleco'],
+  guantes:     ['glove', 'guante'],
+  botas:       ['shoe', 'boot', 'bota', 'calzado', 'zapato'],
+  traje_cuero: ['leather_suit', 'mandil', 'traje_cuero'],
+  traje_tyvek: ['tyvek', 'traje_impermeable'],
+  careta:      ['face_shield', 'careta'],
+  respirador:  ['respirator', 'full_face', 'respirador'],
+  maquina:     ['truck', 'excavator', 'loader', 'dozer', 'machinery', 'vehicle', 'bus', 'maquina'],
 };
 const COCO_NOMBRES = { 0: 'person', 2: 'car', 5: 'bus', 7: 'truck' };
 const COCO_CLASES = new Set([0, 2, 5, 7]);
 
 const EPP = [
-  { k: 'casco',   txt: 'casco',   sup: true,  ausencia: true },
-  { k: 'chaleco', txt: 'chaleco', sup: false, ausencia: true },
-  { k: 'guantes', txt: 'guantes', sup: false, ausencia: false },
-  { k: 'botas',   txt: 'botas',   sup: false, ausencia: false },
+  { k: 'casco',       txt: 'casco',       sup: true,  ausencia: true },
+  { k: 'chaleco',     txt: 'chaleco',     sup: false, ausencia: true },
+  { k: 'guantes',     txt: 'guantes',     sup: false, ausencia: false },
+  { k: 'botas',       txt: 'botas',       sup: false, ausencia: false },
+  { k: 'traje_cuero', txt: 'traje cuero', sup: false, ausencia: true },
+  { k: 'traje_tyvek', txt: 'traje tyvek', sup: false, ausencia: true },
+  { k: 'careta',      txt: 'careta fac.', sup: true,  ausencia: true },
+  { k: 'respirador',  txt: 'respirador',  sup: true,  ausencia: true }
 ];
 
-// EVALUACIÓN DINÁMICA: Anula falsos positivos según el PETAR seleccionado
+// EVALUACIÓN DINÁMICA ESTRICTA POR PETAR
 function exigidoDinamico(k) {
   const base = !$('ex_' + k) || $('ex_' + k).checked;
+  if (!base) return false;
+
   const petar = document.querySelector('input[name="petar"]:checked').value;
   
-  // Si está en caliente (esmeril), lavado o pegado, el chaleco reflectante no se exige (usan cuero/tyvek)
-  if ((petar === 'esmerilado' || petar === 'lavado' || petar === 'pegado') && k === 'chaleco') {
-    return false;
+  if (petar === 'estandar') {
+    return ['casco', 'chaleco', 'guantes', 'botas'].includes(k);
   }
-  return base;
+  if (petar === 'esmerilado') {
+    // Exige obligatoriamente equipo de trabajo en caliente. Anula el chaleco estándar.
+    return ['casco', 'traje_cuero', 'careta', 'respirador', 'guantes'].includes(k);
+  }
+  if (petar === 'lavado') {
+    // Exige traje impermeable y careta para salpicaduras.
+    return ['casco', 'traje_tyvek', 'careta', 'guantes', 'botas'].includes(k);
+  }
+  if (petar === 'pegado') {
+    // Máxima prioridad a la protección respiratoria por solventes.
+    return ['casco', 'traje_tyvek', 'respirador', 'guantes', 'botas'].includes(k);
+  }
+  return false;
 }
 
 function categoria(nombre) {
@@ -482,7 +503,13 @@ async function procesar(src, W0, H0) {
   }
   $('kPersonas').textContent = n.personas; $('kAlertas').textContent = n.alertas;
   $('kZona').textContent = n.en_zona;
-  for (const e of EPP) $('k_' + e.k).textContent = n['sin_' + e.k] === 'n/d' ? '–' : n['sin_' + e.k];
+  
+  // Evita error si el HTML no tiene la caja para el KPI específico (ej. careta)
+  for (const e of EPP) {
+    if ($('k_' + e.k)) {
+      $('k_' + e.k).textContent = n['sin_' + e.k] === 'n/d' ? '–' : n['sin_' + e.k];
+    }
+  }
   
   if (!vivo) {
     ultimaInferencia = n;

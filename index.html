@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#111418">
-<title>Seguridad Minera IA - Auditoría SSOMA</title>
+<title>Auditoría SSOMA IA</title>
 <style>
   :root {
     --bg: #111418; --panel: #1b2027; --line: #2c333d; --text: #e8ecf1; --muted: #9aa5b1;
@@ -22,13 +22,14 @@
          border-radius: 10px; padding: 12px 6px; font-size: 14px; font-weight: 600; text-align: center; cursor: pointer; }
   button:disabled { opacity: .45; }
   button.activo { border-color: var(--danger); color: var(--danger); }
-  
-  /* Selector PETAR */
-  .petar-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 12px; }
-  .petar-group label { text-align: center; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 8px 4px; font-size: 11px; font-weight: bold; cursor: pointer; color: var(--muted); }
+
+  .petar-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 8px 0 12px; }
+  .petar-group label { text-align: center; background: var(--panel); border: 1px solid var(--line);
+         border-radius: 8px; padding: 10px 4px; font-size: 12px; font-weight: 700; cursor: pointer; color: var(--muted); }
   .petar-group input[type="radio"] { display: none; }
-  .petar-group input[type="radio"]:checked + span { color: var(--accent); }
-  .petar-group label:has(input[type="radio"]:checked) { border-color: var(--accent); background: rgba(56, 189, 248, 0.1); }
+  .petar-group label:has(input[type="radio"]:checked) {
+    border-color: var(--accent); color: var(--accent); background: rgba(56, 189, 248, 0.14);
+  }
 
   input[type=file] { display: none; }
   #vista { position: relative; background: #000; border-radius: 12px; overflow: hidden; min-height: 200px;
@@ -46,13 +47,12 @@
   label.fila { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin: 10px 0; font-size: 14px; }
   label.fila input[type=range] { flex: 1; }
   .nota { color: var(--muted); font-size: 12px; }
-  
-  /* Panel Vigía / Inputs */
+
   .panel-vigia { display: none; background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; padding: 12px; margin-top: 12px; }
   .input-base { width: 100%; padding: 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-size: 14px; }
-  .grid-contexto { display: grid; grid-template-columns: 1fr 80px; gap: 8px; align-items: center; margin-bottom: 8px;}
-  .flex-voz { display: flex; gap: 8px; margin-bottom: 12px; }
-  
+  .grid-contexto { display: grid; grid-template-columns: 1fr 86px; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .flex-voz { display: flex; gap: 8px; margin-bottom: 10px; }
+
   #registro { max-height: 180px; overflow: auto; font-size: 12px; font-family: ui-monospace, monospace; color: var(--muted); }
   .leyenda { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 6px; }
   .leyenda i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
@@ -61,17 +61,15 @@
 </head>
 <body>
 <header>
-  <h1>⛑️ Auditoría SSOMA Inteligente</h1>
+  <h1>⛑️ Auditoría SSOMA IA <span class="nota">v2 PETAR</span></h1>
   <div id="estado">Cargando motor de IA…</div>
 </header>
 <main>
-  
-  <!-- Selector Dinámico de PETAR -->
   <div class="petar-group">
-    <label><input type="radio" name="petar" value="estandar" checked><span>Estándar</span></label>
+    <label><input type="radio" name="petar" value="esmerilado" checked><span>🔥 Caliente</span></label>
     <label><input type="radio" name="petar" value="lavado"><span>💦 Lavado</span></label>
-    <label><input type="radio" name="petar" value="esmerilado"><span>🔥 Esmeril</span></label>
     <label><input type="radio" name="petar" value="pegado"><span>🧪 Pegado</span></label>
+    <label><input type="radio" name="petar" value="estandar"><span>👷 Estándar</span></label>
   </div>
 
   <div class="botones">
@@ -83,25 +81,35 @@
   <input id="inGaleria" type="file" accept="image/*">
   <video id="video" playsinline muted></video>
 
-  <div id="vista"><div class="vacio">Selecciona el tipo de trabajo y escanea el frente.</div></div>
+  <div id="vista"><div class="vacio">Selecciona el frente arriba y carga o toma una foto.</div></div>
   <div class="leyenda">
     <span><i style="background:var(--ok)"></i>OK</span>
     <span><i style="background:var(--warn)"></i>Falta EPP</span>
-    <span><i style="background:var(--danger)"></i>Zona Peligro</span>
-    <span><i style="background:#eab308"></i>Lejos: verificar</span>
+    <span><i style="background:var(--danger)"></i>Línea de fuego / Peligro</span>
+    <span><i style="background:#eab308"></i>Tercero / Verificar</span>
   </div>
 
-  <!-- Panel Contextual del Vigía (Se muestra al analizar foto) -->
+  <div class="kpis">
+    <div class="kpi"><b id="kPersonas">–</b><span>Personas</span></div>
+    <div class="kpi alerta"><b id="kAlertas">–</b><span>Alertas</span></div>
+    <div class="kpi alerta"><b id="kZona">–</b><span>En línea fuego</span></div>
+    <div class="kpi"><b id="k_casco">–</b><span>Sin casco</span></div>
+    <div class="kpi"><b id="k_torso">–</b><span id="lbl_torso">Sin traje cuero</span></div>
+    <div class="kpi"><b id="k_facial">–</b><span id="lbl_facial">Sin careta</span></div>
+    <div class="kpi"><b id="k_guantes">–</b><span>Sin guantes</span></div>
+    <div class="kpi"><b id="k_botas">–</b><span>Sin botas</span></div>
+  </div>
+
   <div id="panelVigia" class="panel-vigia">
-    <h3 style="margin: 0 0 10px 0; font-size: 15px; color: var(--accent);">Contexto de Inspección</h3>
+    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: var(--accent);">Registro Rápido del Vigía / SSOMA</h3>
     <div class="grid-contexto">
-      <input list="listaTags" id="tagVigia" class="input-base" placeholder="Causa raíz (Tag predictivo)">
+      <input list="listaTags" id="tagVigia" class="input-base" placeholder="Causa o condición detectada">
       <datalist id="listaTags">
-        <option value="Careta empañada / Visor sucio">
-        <option value="Transición de tarea / Relevo">
-        <option value="Invasión de línea de fuego">
-        <option value="Fatiga térmica / Falta ventilación">
-        <option value="Uso de EPP incompatible">
+        <option value="Operario sin casco ni careta facial">
+        <option value="Sin casaca/mandil de cuero (descarne)">
+        <option value="Tercero expuesto a proyección de chispas">
+        <option value="Careta o Full-Face empañado">
+        <option value="Retiro de respirador por calor/solvente">
       </datalist>
       <div style="display: flex; align-items: center; gap: 4px;">
         <input type="number" id="tempC" class="input-base" placeholder="Temp" style="padding: 10px 4px; text-align: center;">
@@ -109,23 +117,13 @@
       </div>
     </div>
     <div class="flex-voz">
-      <input type="text" id="obsVoz" class="input-base" placeholder="Observaciones adicionales (Dictado)">
-      <button id="btnMic" class="btn" style="width: 50px; font-size: 18px; padding: 0;">🎙️</button>
+      <input type="text" id="obsVoz" class="input-base" placeholder="Dictar observación por voz…">
+      <button id="btnMic" class="btn" style="width: 48px; font-size: 18px; padding: 0;">🎙️</button>
     </div>
     <div style="display: flex; gap: 8px;">
-      <button id="btnGuardarRegistro" style="flex: 1.5; background: var(--ok); color: #000; border: none;">💾 Guardar Inspección</button>
+      <button id="btnGuardarRegistro" style="flex: 1.4; background: var(--ok); color: #000; border: none;">💾 Guardar en Turno</button>
       <button id="btnCopiarReporte" style="flex: 1;">📋 Copiar Reporte</button>
     </div>
-  </div>
-
-  <div class="kpis">
-    <div class="kpi"><b id="kPersonas">–</b><span>Personas</span></div>
-    <div class="kpi alerta"><b id="kAlertas">–</b><span>Alertas</span></div>
-    <div class="kpi alerta"><b id="kZona">–</b><span>En zona</span></div>
-    <div class="kpi"><b id="k_casco">–</b><span>Sin casco</span></div>
-    <div class="kpi"><b id="k_chaleco">–</b><span>Sin chaleco</span></div>
-    <div class="kpi"><b id="k_guantes">–</b><span>Sin guantes</span></div>
-    <div class="kpi"><b id="k_botas">–</b><span>Sin botas</span></div>
   </div>
 
   <details>
@@ -133,19 +131,22 @@
     <p class="nota" id="infoModelos"></p>
     <label class="btn" for="inModelo" style="display:block">📦 Cargar mi modelo EPP (.onnx)</label>
     <input id="inModelo" type="file" accept=".onnx">
-    <label class="fila">Confianza EPP <input id="conf" type="range" min="0.1" max="0.8" step="0.05" value="0.25"><output id="confV">0.25</output></label>
-    <label class="fila">Confianza personas/vehículos <input id="confCoco" type="range" min="0.1" max="0.8" step="0.05" value="0.30"><output id="confCocoV">0.30</output></label>
-    <label class="fila">Margen zona de peligro (% ancho) <input id="margen" type="range" min="0" max="20" step="1" value="6"><output id="margenV">6</output></label>
-    <label class="fila">Mostrar polígonos EPP <input id="verMascaras" type="checkbox" checked></label>
+    <label class="fila">Confianza EPP <input id="conf" type="range" min="0.1" max="0.8" step="0.05" value="0.22"><output id="confV">0.22</output></label>
+    <label class="fila">Confianza personas/vehículos <input id="confCoco" type="range" min="0.1" max="0.8" step="0.02" value="0.18"><output id="confCocoV">0.18</output></label>
+    <label class="fila">Radio zona peligro / chispas (%) <input id="margen" type="range" min="0" max="25" step="1" value="8"><output id="margenV">8</output></label>
+    <label class="fila">Mostrar contornos (polígonos) EPP <input id="verMascaras" type="checkbox" checked></label>
     <p class="nota">Clases EPP (en orden del data.yaml):</p>
     <input id="clases" style="width:100%;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text)"
            value="Gloves,Helmet,No-Gloves,No-Helmet,No-Shoes,No-Vest,Shoes,Vest">
   </details>
 
-  <details>
-    <summary>📋 Registro del Turno (Día/Noche)</summary>
+  <details open>
+    <summary>📋 Registro acumulado del turno (<span id="nReg">0</span>)</summary>
     <div id="registro"></div>
-    <button id="btnCsv" style="margin-top:8px;width:100%; border-color: var(--accent); color: var(--accent);">⬇️ Descargar Reporte Consolidado CSV</button>
+    <div style="display:flex; gap:8px; margin-top:8px;">
+      <button id="btnCsv" style="flex:2; border-color: var(--accent); color: var(--accent);">⬇️ Descargar CSV del Turno</button>
+      <button id="btnLimpiar" style="flex:1;">🗑️ Limpiar</button>
+    </div>
   </details>
 </main>
 <script src="lib/ort.wasm.min.js"></script>

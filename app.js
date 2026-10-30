@@ -1,11 +1,15 @@
 'use strict';
 /* =====================================================================
-   Seguridad Minera IA – Auditoría SSOMA
-   Motor Edge AI (ONNX Runtime Web) con Matriz Dinámica de EPP y Reportabilidad
+   Auditoría SSOMA IA – v2 PETAR (Caliente / Lavado / Pegado / Estándar)
+   - Corrige falso positivo de Gloves en la cabeza
+   - Detecta cono de chispas como Zona de Peligro (Línea de Fuego)
+   - Detecta trabajadores secundarios/agachados al fondo
+   - Audita Casco, Traje de Cuero (descarne), Careta/Respirador y Guantes
    ===================================================================== */
-const S = 640;   // tamaño de entrada
-const P = 160;   // resolución prototipos
-const NM = 32;   // coeficientes máscara
+const S = 640;
+const P = 160;
+const NM = 32;
+const Q = 320;
 
 ort.env.wasm.wasmPaths = new URL('lib/', location.href).href;
 ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1;
@@ -13,62 +17,49 @@ ort.env.wasm.numThreads = self.crossOriginIsolated ? Math.min(4, navigator.hardw
 const $ = (id) => document.getElementById(id);
 const estado = (msg) => { $('estado').textContent = msg; };
 
-// ---------- Categorías y Matriz de EPP ----------
 const CATEGORIAS = {
   persona:     ['person', 'persona', 'worker', 'trabajador'],
   casco:       ['helmet', 'hardhat', 'hard-hat', 'casco'],
   chaleco:     ['vest', 'chaleco'],
   guantes:     ['glove', 'guante'],
   botas:       ['shoe', 'boot', 'bota', 'calzado', 'zapato'],
-  traje_cuero: ['leather_suit', 'mandil', 'traje_cuero'],
-  traje_tyvek: ['tyvek', 'traje_impermeable'],
-  careta:      ['face_shield', 'careta'],
-  respirador:  ['respirator', 'full_face', 'respirador'],
-  maquina:     ['truck', 'excavator', 'loader', 'dozer', 'machinery', 'vehicle', 'bus', 'maquina'],
+  traje_cuero: ['leather', 'leather-suit', 'mandil', 'traje-cuero', 'cuero'],
+  traje_tyvek: ['tyvek', 'impermeable', 'traje-tyvek'],
+  careta:      ['shield', 'face-shield', 'careta', 'welding-mask'],
+  respirador:  ['respirator', 'full-face', 'mask', 'respirador'],
+  maquina:     ['truck', 'excavator', 'loader', 'dozer', 'machinery', 'vehicle', 'bus', 'car', 'camion', 'maquina'],
 };
 const COCO_NOMBRES = { 0: 'person', 2: 'car', 5: 'bus', 7: 'truck' };
 const COCO_CLASES = new Set([0, 2, 5, 7]);
 
-const EPP = [
-  { k: 'casco',       txt: 'casco',       sup: true,  ausencia: true },
-  { k: 'chaleco',     txt: 'chaleco',     sup: false, ausencia: true },
-  { k: 'guantes',     txt: 'guantes',     sup: false, ausencia: false },
-  { k: 'botas',       txt: 'botas',       sup: false, ausencia: false },
-  { k: 'traje_cuero', txt: 'traje cuero', sup: false, ausencia: true },
-  { k: 'traje_tyvek', txt: 'traje tyvek', sup: false, ausencia: true },
-  { k: 'careta',      txt: 'careta fac.', sup: true,  ausencia: true },
-  { k: 'respirador',  txt: 'respirador',  sup: true,  ausencia: true }
-];
+const EPP_LISTA = ['casco', 'chaleco', 'guantes', 'botas', 'traje_cuero', 'traje_tyvek', 'careta', 'respirador'];
 
-// EVALUACIÓN DINÁMICA ESTRICTA POR PETAR
-function exigidoDinamico(k) {
-  const base = !$('ex_' + k) || $('ex_' + k).checked;
-  if (!base) return false;
+function petarActual() {
+  const el = document.querySelector('input[name="petar"]:checked');
+  return el ? el.value : 'esmerilado';
+}
 
-  const petar = document.querySelector('input[name="petar"]:checked').value;
-  
-  if (petar === 'estandar') {
-    return ['casco', 'chaleco', 'guantes', 'botas'].includes(k);
+function actualizarEtiquetasKPI() {
+  const modo = petarActual();
+  if (modo === 'esmerilado') {
+    $('lbl_torso').textContent = 'Sin traje cuero';
+    $('lbl_facial').textContent = 'Sin careta';
+  } else if (modo === 'lavado') {
+    $('lbl_torso').textContent = 'Sin traje imperm.';
+    $('lbl_facial').textContent = 'Sin careta/visor';
+  } else if (modo === 'pegado') {
+    $('lbl_torso').textContent = 'Sin traje químico';
+    $('lbl_facial').textContent = 'Sin Full-Face';
+  } else {
+    $('lbl_torso').textContent = 'Sin chaleco';
+    $('lbl_facial').textContent = 'Sin prot. facial';
   }
-  if (petar === 'esmerilado') {
-    // Exige obligatoriamente equipo de trabajo en caliente. Anula el chaleco estándar.
-    return ['casco', 'traje_cuero', 'careta', 'respirador', 'guantes'].includes(k);
-  }
-  if (petar === 'lavado') {
-    // Exige traje impermeable y careta para salpicaduras.
-    return ['casco', 'traje_tyvek', 'careta', 'guantes', 'botas'].includes(k);
-  }
-  if (petar === 'pegado') {
-    // Máxima prioridad a la protección respiratoria por solventes.
-    return ['casco', 'traje_tyvek', 'respirador', 'guantes', 'botas'].includes(k);
-  }
-  return false;
 }
 
 function categoria(nombre) {
   const n = String(nombre).toLowerCase().replace(/[_ ]/g, '-');
   if (n.startsWith('no-') || n.startsWith('sin-')) {
-    for (const e of EPP) if (CATEGORIAS[e.k].some((c) => n.includes(c))) return 'sin_' + e.k;
+    for (const k of EPP_LISTA) if (CATEGORIAS[k].some((c) => n.includes(c))) return 'sin_' + k;
     return 'sin_otro';
   }
   for (const [cat, claves] of Object.entries(CATEGORIAS)) {
@@ -77,7 +68,7 @@ function categoria(nombre) {
   return null;
 }
 
-// ---------- Base de Datos Local (Modelos) ----------
+// ---------- IndexedDB ----------
 function abrirDB() {
   return new Promise((res, rej) => {
     const r = indexedDB.open('seguridad-minera', 1);
@@ -100,10 +91,12 @@ async function dbGuardar(clave, valor) {
   try {
     const db = await abrirDB();
     db.transaction('modelos', 'readwrite').objectStore('modelos').put(valor, clave);
-  } catch (e) { }
+  } catch (e) {}
 }
 
 let sesCoco = null, sesEpp = null, eppNC = null;
+let ultimaImg = null;
+
 function crearSesion(src) {
   return ort.InferenceSession.create(src, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
 }
@@ -112,31 +105,35 @@ function nombresEpp() {
 }
 function actualizarInfo() {
   const n = nombresEpp().length;
-  $('infoModelos').textContent = `COCO: ${sesCoco ? '✅' : '❌'} · EPP: ${sesEpp ? '✅' : '❌'}`;
-  estado(sesCoco ? (sesEpp ? 'Listo ✅ (COCO + EPP)' : 'Listo COCO. Carga modelo EPP') : 'Error modelo COCO');
+  $('infoModelos').textContent =
+    `COCO: ${sesCoco ? 'cargado ✅' : 'no cargado'} · EPP: ${sesEpp ? 'cargado ✅' : 'NO cargado'}` +
+    (eppNC !== null && eppNC !== n ? ` · ⚠️ modelo de ${eppNC} clases` : '');
+  estado(sesCoco ? (sesEpp ? 'Listo ✅ (Auditoría PETAR activa)' : 'Listo COCO') : 'Error modelo COCO');
 }
 
 async function iniciar() {
+  actualizarEtiquetasKPI();
+  renderizarRegistro();
   try {
-    estado('Cargando motor neuronal…');
+    estado('Cargando modelo de personas y vehículos…');
     sesCoco = await crearSesion('modelos/coco.onnx');
-  } catch (e) { return estado('Falla coco.onnx: ' + e.message); }
-  
+  } catch (e) {
+    estado('No se pudo cargar modelos/coco.onnx: ' + e.message);
+    return;
+  }
   try {
     const r = await fetch('modelos/epp.onnx');
     if (r.ok) sesEpp = await crearSesion(new Uint8Array(await r.arrayBuffer()));
-  } catch (e) { }
-  
+  } catch (e) {}
   if (!sesEpp) {
     const buf = await dbLeer('epp');
     if (buf) { try { sesEpp = await crearSesion(new Uint8Array(buf)); } catch (e) {} }
   }
   $('btnVivo').disabled = false;
   actualizarInfo();
-  renderizarRegistro(); // Carga historial del turno al abrir
 }
 
-// ---------- Preprocesamiento y Decodificación ----------
+// ---------- Preprocesamiento ----------
 const cv640 = document.createElement('canvas');
 cv640.width = cv640.height = S;
 const ctx640 = cv640.getContext('2d', { willReadFrequently: true });
@@ -148,12 +145,13 @@ function preparar(src, W, H) {
   ctx640.fillStyle = 'rgb(114,114,114)';
   ctx640.fillRect(0, 0, S, S);
   ctx640.drawImage(src, 0, 0, W, H, px, py, nw, nh);
-  const d = ctx640.getImageData(0, 0, S, S).data;
+  const imgData = ctx640.getImageData(0, 0, S, S);
+  const d = imgData.data;
   const n = S * S, f = new Float32Array(3 * n);
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     f[i] = d[j] / 255; f[n + i] = d[j + 1] / 255; f[2 * n + i] = d[j + 2] / 255;
   }
-  return { tensor: new ort.Tensor('float32', f, [1, 3, S, S]), s, px, py, nw, nh, W, H };
+  return { tensor: new ort.Tensor('float32', f, [1, 3, S, S]), raw: d, s, px, py, nw, nh, W, H };
 }
 
 function decodificar(t, conf, permitidas) {
@@ -172,6 +170,13 @@ function decodificar(t, conf, permitidas) {
       const coef = new Float32Array(NM);
       for (let k = 0; k < NM; k++) coef[k] = d[(4 + nc + k) * N + i];
       res.push({ x1: cx - w / 2, y1: cy - h / 2, x2: cx + w / 2, y2: cy + h / 2, score: ms, cls: mejor, coef });
+    }
+  } else {
+    const K = A, C = B; nc = null;
+    for (let i = 0; i < K; i++) {
+      const o = i * C, sc = d[o + 4], cl = Math.round(d[o + 5]);
+      if (sc < conf || (permitidas && !permitidas.has(cl))) continue;
+      res.push({ x1: d[o], y1: d[o + 1], x2: d[o + 2], y2: d[o + 3], score: sc, cls: cl, coef: d.slice(o + 6, o + 6 + NM) });
     }
   }
   return { cands: res, nc };
@@ -194,14 +199,12 @@ function nms(cands, umbral) {
   return keep;
 }
 
-const Q = 320;
 function armarDeteccion(c, protos, lb, nombres) {
   const pd = protos.data, PP = P * P, m = new Uint8Array(PP);
   const bx1 = Math.max(0, Math.floor(c.x1 / 4)), by1 = Math.max(0, Math.floor(c.y1 / 4));
   const bx2 = Math.min(P, Math.ceil(c.x2 / 4)), by2 = Math.min(P, Math.ceil(c.y2 / 4));
   const ex1 = Math.max(0, bx1 - 1), ey1 = Math.max(0, by1 - 1), ex2 = Math.min(P, bx2 + 1), ey2 = Math.min(P, by2 + 1);
   const ew = ex2 - ex1, eh = ey2 - ey1, v = new Float32Array(Math.max(0, ew * eh));
-  
   for (let y = ey1; y < ey2; y++) {
     for (let x = ex1; x < ex2; x++) {
       const p = y * P + x;
@@ -242,7 +245,7 @@ async function inferir(ses, lb, conf, permitidas, nombres) {
   return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, nombres)), nc };
 }
 
-// ---------- Lógica Espacial ----------
+// ---------- Reglas de Seguridad y Detección de Chispas / Línea de Fuego ----------
 const centro = (b) => [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
 function dentro(p, b, tercioSup) {
   let [x1, y1, x2, y2] = b;
@@ -268,44 +271,130 @@ function dilatar(m, r) {
   }
 }
 
-function analizar(dets, lb, margenPct, eppActivo) {
+// Detecta focos de chispas incandescentes (esmerilado / soldadura) en la grilla 160x160
+function detectarChispas(lb, zona) {
+  const d = lb.raw;
+  let puntosChispa = 0;
+  const chispas = new Uint8Array(P * P);
+  for (let y = 0; y < P; y++) {
+    const sy = y * 4;
+    if (sy < lb.py || sy >= lb.py + lb.nh) continue;
+    for (let x = 0; x < P; x++) {
+      const sx = x * 4;
+      if (sx < lb.px || sx >= lb.px + lb.nw) continue;
+      // Busca núcleo brillante amarillo/naranja rodeado de halo cálido
+      const idx = (sy * S + sx) * 4;
+      const r = d[idx], g = d[idx + 1], b = d[idx + 2];
+      if (r > 235 && g > 140 && b < 120 && (r - b) > 130) {
+        chispas[y * P + x] = 1;
+        puntosChispa++;
+      }
+    }
+  }
+  // Si hay un cono real de chispas (> 18 celdas activas), lo convierte en Zona de Peligro
+  if (puntosChispa > 18) {
+    for (let i = 0; i < P * P; i++) if (chispas[i]) zona[i] = 1;
+    return true;
+  }
+  return false;
+}
+
+function analizar(dets, lb, margenPct) {
+  const modo = petarActual();
   const PP = P * P, zona = new Uint8Array(PP);
-  let hayMaquina = false;
+  let hayFocoPeligro = false;
+
+  // 1. Elimina falsos positivos de "Gloves" en la cabeza de las personas (ej. capucha azul)
+  const personasRaw = dets.filter((d) => d.cat === 'persona');
+  for (let i = dets.length - 1; i >= 0; i--) {
+    const d = dets[i];
+    if (d.cat === 'guantes') {
+      const c = centro(d.box);
+      const enCabeza = personasRaw.some((p) => {
+        const h = p.box[3] - p.box[1];
+        return c[0] >= p.box[0] && c[0] <= p.box[2] && c[1] >= p.box[1] && c[1] <= p.box[1] + h * 0.28;
+      });
+      if (enCabeza) dets.splice(i, 1); // Descarta guante falso en la cabeza
+    }
+  }
+
+  // 2. Construye Zona de Peligro (Maquinaria o Cono de Chispas en Caliente)
   for (const d of dets) {
     if (d.cat !== 'maquina') continue;
-    hayMaquina = true;
+    hayFocoPeligro = true;
     for (let i = 0; i < PP; i++) if (d.mask[i]) zona[i] = 1;
   }
-  if (hayMaquina) {
+  if (modo === 'esmerilado' && detectarChispas(lb, zona)) {
+    hayFocoPeligro = true;
+  }
+  if (hayFocoPeligro) {
     const r = Math.round((margenPct / 100) * lb.W * lb.s / 4);
     if (r > 0) dilatar(zona, r);
   }
+
+  // 3. Verifica si el modelo ONNX ya incluye las clases nuevas o solo las 8 básicas
+  const listaClases = nombresEpp().map((c) => categoria(c));
+  const modeloTieneCuero = listaClases.includes('traje_cuero');
+  const modeloTieneCareta = listaClases.includes('careta') || listaClases.includes('respirador');
+
   const personas = [];
-  for (const p of dets.filter((d) => d.cat === 'persona')) {
+  for (const p of personasRaw) {
     const b = p.box;
     const hay = (cat, sup) => dets.some((d) => d.cat === cat && dentro(centro(d.box), b, sup));
     let enZona = false;
     for (let i = 0; i < PP; i++) if (p.mask[i] && zona[i]) { enZona = true; break; }
-    if (!eppActivo) {
-      personas.push({ box: b, maskHi: p.maskHi, enZona, lejos: false, epp: null });
-      continue;
+
+    const lejos = (b[3] - b[1]) < 0.14 * lb.H;
+    const tieneCasco = hay('casco', true) && !hay('sin_casco', false);
+    const tieneGuantes = hay('guantes', false) || (!hay('sin_guantes', false) && lejos);
+    const tieneBotas = !hay('sin_botas', false);
+
+    // Evaluación según el Frente PETAR seleccionado
+    const faltas = [];
+    let sinCasco = false, sinTorso = false, sinFacial = false, sinGuantes = false, sinBotas = false;
+
+    if (!tieneCasco && !lejos) {
+      sinCasco = true;
+      faltas.push('casco');
     }
-    const tiene = {}, falta = {};
-    for (const e of EPP) { tiene[e.k] = hay(e.k, e.sup); falta[e.k] = hay('sin_' + e.k, false); }
-    const explicito = EPP.some((e) => exigidoDinamico(e.k) && falta[e.k]);
-    const lejos = (b[3] - b[1]) < 0.12 * lb.H && !explicito;
-    const epp = {};
-    for (const e of EPP) {
-      if (!exigidoDinamico(e.k)) continue;
-      if (falta[e.k]) epp[e.k] = false;
-      else if (tiene[e.k]) epp[e.k] = true;
-      else epp[e.k] = (e.ausencia && !lejos) ? false : null;
+    if (hay('sin_guantes', false)) {
+      sinGuantes = true;
+      faltas.push('guantes');
     }
-    personas.push({ box: b, maskHi: p.maskHi, enZona, lejos, epp });
+    if (!tieneBotas) {
+      sinBotas = true;
+      faltas.push('botas');
+    }
+
+    if (modo === 'esmerilado') {
+      // Trabajo en caliente: exige traje de cuero y careta facial (NO exige chaleco reflectante)
+      const tieneCuero = modeloTieneCuero ? hay('traje_cuero', false) : false;
+      const tieneCareta = modeloTieneCareta ? (hay('careta', true) || hay('respirador', true)) : false;
+      if (!tieneCuero && !lejos) { sinTorso = true; faltas.push('traje cuero'); }
+      if (!tieneCareta && !lejos) { sinFacial = true; faltas.push('careta'); }
+    } else if (modo === 'lavado') {
+      const tieneTyvek = listaClases.includes('traje_tyvek') ? hay('traje_tyvek', false) : false;
+      const tieneCareta = modeloTieneCareta ? (hay('careta', true) || hay('respirador', true)) : false;
+      if (!tieneTyvek && !lejos) { sinTorso = true; faltas.push('traje imperm.'); }
+      if (!tieneCareta && !lejos) { sinFacial = true; faltas.push('careta'); }
+    } else if (modo === 'pegado') {
+      const tieneTyvek = listaClases.includes('traje_tyvek') ? hay('traje_tyvek', false) : false;
+      const tieneResp = modeloTieneCareta ? hay('respirador', true) : false;
+      if (!tieneTyvek && !lejos) { sinTorso = true; faltas.push('traje químico'); }
+      if (!tieneResp && !lejos) { sinFacial = true; faltas.push('Full-Face'); }
+    } else {
+      // Modo Estándar
+      const tieneChaleco = hay('chaleco', false) && !hay('sin_chaleco', false);
+      if (!tieneChaleco && !lejos) { sinTorso = true; faltas.push('chaleco'); }
+    }
+
+    personas.push({
+      box: b, maskHi: p.maskHi, enZona, lejos, faltas,
+      sinCasco, sinTorso, sinFacial, sinGuantes, sinBotas
+    });
   }
-  const huerfanas = dets.filter((d) => EPP.some((e) => d.cat === 'sin_' + e.k && exigidoDinamico(e.k)) &&
-    !personas.some((p) => dentro(centro(d.box), p.box, false)));
-  return { zona, personas, huerfanas };
+
+  return { zona, personas };
 }
 
 // ---------- Dibujo ----------
@@ -315,9 +404,15 @@ const capa = document.createElement('canvas');
 capa.width = capa.height = Q;
 const cctx = capa.getContext('2d');
 
-const RGB = { ok: [34, 197, 94], falta: [245, 158, 11], zona: [239, 68, 68], lejos: [234, 179, 8], maquina: [56, 189, 248], epp: [56, 189, 248], infra: [245, 158, 11], nd: [148, 163, 184] };
+const RGB = {
+  ok: [34, 197, 94], falta: [245, 158, 11], zona: [239, 68, 68], lejos: [234, 179, 8],
+  maquina: [56, 189, 248], epp: [56, 189, 248], infra: [245, 158, 11]
+};
 const hex = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
-const CAT_EPP = { casco: RGB.epp, chaleco: RGB.epp, guantes: RGB.epp, botas: RGB.epp, sin_casco: RGB.infra, sin_chaleco: RGB.infra, sin_guantes: RGB.infra, sin_botas: RGB.infra, sin_otro: RGB.infra };
+const CAT_EPP = {
+  casco: RGB.epp, chaleco: RGB.epp, guantes: RGB.epp, botas: RGB.epp,
+  traje_cuero: RGB.epp, traje_tyvek: RGB.epp, careta: RGB.epp, respirador: RGB.epp
+};
 
 let ocupados = [];
 function etiqueta(ctx, txt, x, y, color, fs, evitar) {
@@ -330,7 +425,7 @@ function etiqueta(ctx, txt, x, y, color, fs, evitar) {
     for (let i = 0; i < 8 && choca(yy); i++) yy += fs + 8;
   }
   ocupados.push({ x, y: yy - fs - 6, w, h: fs + 8 });
-  ctx.fillStyle = 'rgba(0,0,0,.7)';
+  ctx.fillStyle = 'rgba(0,0,0,.78)';
   ctx.fillRect(x, yy - fs - 6, w, fs + 8);
   ctx.fillStyle = color;
   ctx.fillText(txt, x + 4, yy - 3);
@@ -343,7 +438,8 @@ function pintarPoligono(px, mask, rgb, alfaRelleno, grosor) {
       if (!mask[i]) continue;
       let borde = false;
       for (let d = 1; d <= grosor && !borde; d++) {
-        borde = x < d || y < d || x >= Q - d || y >= Q - d || !mask[i - d] || !mask[i + d] || !mask[i - d * Q] || !mask[i + d * Q];
+        borde = x < d || y < d || x >= Q - d || y >= Q - d ||
+          !mask[i - d] || !mask[i + d] || !mask[i - d * Q] || !mask[i + d * Q];
       }
       const j = i * 4, a = borde ? 255 : alfaRelleno;
       if (a >= px[j + 3]) { px[j] = rgb[0]; px[j + 1] = rgb[1]; px[j + 2] = rgb[2]; px[j + 3] = a; }
@@ -357,53 +453,53 @@ function dibujar(src, lb, dets, an, verMascaras) {
   if (vistaCanvas.width !== W || vistaCanvas.height !== H) { vistaCanvas.width = W; vistaCanvas.height = H; }
   vctx.drawImage(src, 0, 0, W, H);
 
-  let alertas = an.huerfanas.length;
+  let alertas = 0;
   for (const p of an.personas) {
-    const faltas = [];
-    if (p.enZona) faltas.push('ZONA PELIGRO');
-    const faltaEpp = p.epp ? EPP.filter((e) => p.epp[e.k] === false).map((e) => e.txt) : [];
-    if (faltaEpp.length) faltas.push('sin: ' + faltaEpp.join(', '));
-    const sinEval = p.epp === null;
-    p.rgb = p.enZona ? RGB.zona : faltas.length ? RGB.falta : sinEval ? RGB.nd : p.lejos ? RGB.lejos : RGB.ok;
-    p.txt = faltas.length ? faltas.join(', ') : sinEval ? 'EPP no evaluado' : p.lejos ? 'lejos: verificar' : 'OK';
-    if (faltas.length) alertas++;
+    const msgs = [];
+    if (p.enZona) msgs.push('LÍNEA DE FUEGO');
+    if (p.faltas.length) msgs.push('sin: ' + p.faltas.join(', '));
+    p.rgb = p.enZona ? RGB.zona : p.faltas.length ? RGB.falta : p.lejos ? RGB.lejos : RGB.ok;
+    p.txt = msgs.length ? msgs.join(' · ') : p.lejos ? 'tercero/fondo: verificar' : 'OK';
+    if (msgs.length) alertas++;
   }
 
   const img = cctx.createImageData(Q, Q), px = img.data;
   const zonaHi = new Uint8Array(Q * Q);
   for (let i = 0; i < Q * Q; i++) zonaHi[i] = an.zona[((i / Q | 0) >> 1) * P + ((i % Q) >> 1)];
-  pintarPoligono(px, zonaHi, RGB.zona, 70, 0);
+  pintarPoligono(px, zonaHi, RGB.zona, 75, 1); // Polígono rojo sobre cono de chispas / peligro
   for (const d of dets) if (d.cat === 'maquina') pintarPoligono(px, d.maskHi, RGB.maquina, 50, 1);
   for (const p of an.personas) pintarPoligono(px, p.maskHi, p.rgb, 95, 1);
-  if (verMascaras) for (const d of dets) if (CAT_EPP[d.cat]) pintarPoligono(px, d.maskHi, CAT_EPP[d.cat], 150, 1);
+  if (verMascaras) {
+    for (const d of dets) if (CAT_EPP[d.cat]) pintarPoligono(px, d.maskHi, CAT_EPP[d.cat], 150, 1);
+  }
   cctx.putImageData(img, 0, 0);
   vctx.imageSmoothingEnabled = true;
   vctx.drawImage(capa, lb.px / 2, lb.py / 2, lb.nw / 2, lb.nh / 2, 0, 0, W, H);
 
   ocupados = [];
   const fs = Math.max(12, Math.round(W / 48));
-  for (const d of dets.filter((x) => x.cat === 'maquina')) etiqueta(vctx, d.nombre, d.box[0] * k, d.box[1] * k, hex(RGB.maquina), fs);
-  for (const d of an.huerfanas) etiqueta(vctx, d.nombre, d.box[0] * k, d.box[3] * k + fs + 6, hex(RGB.infra), Math.round(fs * 0.85));
   if (verMascaras) {
-    for (const d of dets) if (CAT_EPP[d.cat] && !an.huerfanas.includes(d)) etiqueta(vctx, d.nombre, d.box[0] * k, d.box[1] * k, hex(CAT_EPP[d.cat]), Math.round(fs * 0.75));
+    for (const d of dets) if (CAT_EPP[d.cat])
+      etiqueta(vctx, d.nombre, d.box[0] * k, d.box[1] * k, hex(CAT_EPP[d.cat]), Math.round(fs * 0.75));
   }
-  for (const p of an.personas) etiqueta(vctx, p.txt, p.box[0] * k, p.box[1] * k, hex(p.rgb), Math.round(fs * 0.9), true);
-  etiqueta(vctx, `Personas: ${an.personas.length}  Alertas: ${alertas}`, 6, fs + 10, '#fff', Math.round(fs * 1.2));
+  for (const p of an.personas) etiqueta(vctx, p.txt, p.box[0] * k, p.box[1] * k, hex(p.rgb), Math.round(fs * 0.88), true);
+  etiqueta(vctx, `Modo: ${petarActual().toUpperCase()} · Personas: ${an.personas.length} · Alertas: ${alertas}`, 6, fs + 10, '#fff', Math.round(fs * 1.1));
 
   const vista = $('vista');
   if (vista.firstElementChild !== vistaCanvas) { vista.innerHTML = ''; vista.appendChild(vistaCanvas); }
   return alertas;
 }
 
-// ---------- Control de Contexto y Storage ----------
+// ---------- Registro Acumulado del Turno ----------
 let registro = JSON.parse(localStorage.getItem('ssoma_turno') || '[]');
-let ultimaInferencia = null; // Memoria de la foto procesada
+let ultimaInferencia = null;
 
 function renderizarRegistro() {
+  $('nReg').textContent = registro.length;
   $('registro').innerHTML = '';
-  registro.slice(-12).reverse().forEach(r => {
+  registro.slice(-15).reverse().forEach((r) => {
     const div = document.createElement('div');
-    div.textContent = `[${r.hora}] ${r.actividad} | Alertas: ${r.alertas} | Temp: ${r.temp_c}°C | Tag: ${r.tag_vigia}`;
+    div.textContent = `[${r.hora}] ${r.actividad.toUpperCase()} · Pers:${r.personas} · Alertas:${r.alertas} · Zona:${r.en_zona} · ${r.temp_c}°C · ${r.tag_vigia}`;
     $('registro').appendChild(div);
   });
 }
@@ -412,54 +508,45 @@ $('btnGuardarRegistro').onclick = () => {
   if (!ultimaInferencia) return;
   const hAct = new Date();
   const turnoStr = (hAct.getHours() >= 19 || hAct.getHours() < 7) ? 'Noche' : 'Día';
-  
   const fila = {
-    fecha: hAct.toLocaleDateString('es-PE'), hora: hAct.toLocaleTimeString('es-PE'),
-    turno: turnoStr, actividad: document.querySelector('input[name="petar"]:checked').value,
-    temp_c: $('tempC').value || 'N/D', tag_vigia: $('tagVigia').value || 'Sin justificación',
+    fecha: hAct.toLocaleDateString('es-PE'),
+    hora: hAct.toLocaleTimeString('es-PE'),
+    turno: turnoStr,
+    actividad: petarActual(),
+    temp_c: $('tempC').value || 'N/D',
+    tag_vigia: $('tagVigia').value || 'Inspección de rutina',
     obs_voz: $('obsVoz').value || '-',
-    personas: ultimaInferencia.personas, alertas: ultimaInferencia.alertas, en_zona: ultimaInferencia.en_zona,
-    sin_casco: ultimaInferencia.sin_casco, sin_chaleco: ultimaInferencia.sin_chaleco,
-    sin_guantes: ultimaInferencia.sin_guantes, sin_botas: ultimaInferencia.sin_botas
+    ...ultimaInferencia
   };
-
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition((pos) => {
-      fila.lat = pos.coords.latitude.toFixed(5); fila.lon = pos.coords.longitude.toFixed(5);
-      finalizarGuardado(fila);
-    }, () => { fila.lat = 'N/D'; fila.lon = 'N/D'; finalizarGuardado(fila); }, { timeout: 3000 });
-  } else {
-    fila.lat = 'N/D'; fila.lon = 'N/D'; finalizarGuardado(fila);
-  }
-};
-
-function finalizarGuardado(fila) {
   registro.push(fila);
   localStorage.setItem('ssoma_turno', JSON.stringify(registro));
   renderizarRegistro();
-  estado('Inspección consolidada localmente ✅');
-  $('tagVigia').value = ''; $('tempC').value = ''; $('obsVoz').value = '';
-  $('panelVigia').style.display = 'none';
-}
+  estado('Inspección guardada en el turno ✅');
+};
 
-// Generador de texto rápido para WhatsApp/Correo
+$('btnLimpiar').onclick = () => {
+  if (!confirm('¿Borrar los registros acumulados de este turno?')) return;
+  registro = [];
+  localStorage.removeItem('ssoma_turno');
+  renderizarRegistro();
+};
+
 $('btnCopiarReporte').onclick = () => {
   if (!ultimaInferencia) return;
-  const txt = `🚨 Auditoría SSOMA [${new Date().toLocaleTimeString('es-PE')}]\nFrente: ${document.querySelector('input[name="petar"]:checked').value.toUpperCase()}\nPersonas Expuestas: ${ultimaInferencia.personas}\nAlertas EPP: ${ultimaInferencia.alertas}\nTemperatura: ${$('tempC').value || 'N/D'}°C\nHallazgo: ${$('tagVigia').value || 'N/A'}\nNotas: ${$('obsVoz').value || '-'}`;
-  navigator.clipboard.writeText(txt).then(() => estado('Reporte SSOMA copiado al portapapeles.'));
+  const txt = `🚨 Auditoría SSOMA [${new Date().toLocaleTimeString('es-PE')}]\nFrente: ${petarActual().toUpperCase()}\nPersonas: ${ultimaInferencia.personas} | Alertas: ${ultimaInferencia.alertas} | Línea de fuego: ${ultimaInferencia.en_zona}\nTemp: ${$('tempC').value || 'N/D'} °C\nCausa: ${$('tagVigia').value || 'Por verificar'}\nObs: ${$('obsVoz').value || '-'}`;
+  navigator.clipboard.writeText(txt).then(() => estado('Reporte copiado al portapapeles ✅'));
 };
 
 $('btnCsv').onclick = () => {
-  if (!registro.length) { estado('El turno actual no tiene inspecciones.'); return; }
+  if (!registro.length) { estado('Aún no hay inspecciones guardadas en el turno'); return; }
   const cab = Object.keys(registro[0]);
-  const csv = [cab.join(','), ...registro.map((r) => cab.map((c) => `"${r[c]}"`).join(','))].join('\n');
+  const csv = [cab.join(','), ...registro.map((r) => cab.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-  a.download = `SSOMA_Turno_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `SSOMA_Turno_${new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
 };
 
-// Dictado por voz
 $('btnMic').onclick = () => {
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) return alert('El navegador no soporta dictado por voz.');
@@ -468,15 +555,16 @@ $('btnMic').onclick = () => {
   rec.start();
   $('btnMic').style.background = 'var(--danger)';
   rec.onresult = (e) => { $('obsVoz').value += ($('obsVoz').value ? ' ' : '') + e.results[0][0].transcript; };
-  rec.onend = () => $('btnMic').style.background = 'transparent';
+  rec.onend = () => { $('btnMic').style.background = 'var(--panel)'; };
 };
 
-// ---------- Proceso Central ----------
+// ---------- Proceso Principal ----------
 const snap = document.createElement('canvas');
 const sctx = snap.getContext('2d');
 
 async function procesar(src, W0, H0) {
   if (!sesCoco) return;
+  actualizarEtiquetasKPI();
   const k = Math.min(1, 1920 / Math.max(W0, H0));
   const W = Math.round(W0 * k), H = Math.round(H0 * k);
   snap.width = W; snap.height = H;
@@ -492,46 +580,62 @@ async function procesar(src, W0, H0) {
   const rc = await inferir(sesCoco, lb, +$('confCoco').value, COCO_CLASES, COCO_NOMBRES);
   dets = dets.concat(rc.dets.filter((d) => d.cat === 'persona' || d.cat === 'maquina'));
 
-  const an = analizar(dets, lb, +$('margen').value, !!sesEpp);
+  const an = analizar(dets, lb, +$('margen').value);
   const alertas = dibujar(snap, lb, dets, an, $('verMascaras').checked);
 
-  const n = { personas: an.personas.length, alertas, en_zona: an.personas.filter((p) => p.enZona).length };
-  for (const e of EPP) {
-    n['sin_' + e.k] = (sesEpp && exigidoDinamico(e.k))
-      ? an.personas.filter((p) => p.epp && p.epp[e.k] === false).length + an.huerfanas.filter((d) => d.cat === 'sin_' + e.k).length
-      : 'n/d';
-  }
-  $('kPersonas').textContent = n.personas; $('kAlertas').textContent = n.alertas;
+  const n = {
+    personas: an.personas.length,
+    alertas,
+    en_zona: an.personas.filter((p) => p.enZona).length,
+    sin_casco: an.personas.filter((p) => p.sinCasco).length,
+    sin_torso: an.personas.filter((p) => p.sinTorso).length,
+    sin_facial: an.personas.filter((p) => p.sinFacial).length,
+    sin_guantes: an.personas.filter((p) => p.sinGuantes).length,
+    sin_botas: an.personas.filter((p) => p.sinBotas).length,
+  };
+
+  $('kPersonas').textContent = n.personas;
+  $('kAlertas').textContent = n.alertas;
   $('kZona').textContent = n.en_zona;
-  
-  // Evita error si el HTML no tiene la caja para el KPI específico (ej. careta)
-  for (const e of EPP) {
-    if ($('k_' + e.k)) {
-      $('k_' + e.k).textContent = n['sin_' + e.k] === 'n/d' ? '–' : n['sin_' + e.k];
-    }
-  }
-  
+  $('k_casco').textContent = n.sin_casco;
+  $('k_torso').textContent = n.sin_torso;
+  $('k_facial').textContent = n.sin_facial;
+  $('k_guantes').textContent = n.sin_guantes;
+  $('k_botas').textContent = n.sin_botas;
+
   if (!vivo) {
     ultimaInferencia = n;
-    $('panelVigia').style.display = 'block'; // Activa el formulario del vigía
+    $('panelVigia').style.display = 'block';
   }
   return n;
 }
 
-// ---------- Interfaz de Hardware ----------
+// Re-analiza automáticamente la misma foto al cambiar de botón PETAR
+document.querySelectorAll('input[name="petar"]').forEach((el) => {
+  el.onchange = () => {
+    actualizarEtiquetasKPI();
+    if (ultimaImg && !vivo) procesar(ultimaImg, ultimaImg.width, ultimaImg.height);
+  };
+});
+
 async function desdeArchivo(ev) {
-  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
+  const f = ev.target.files[0];
+  ev.target.value = '';
+  if (!f) return;
   if (vivo) detenerVivo();
   if (!sesCoco) { estado('Espera a que carguen los modelos…'); return; }
-  estado('Auditoría en proceso…');
+  estado('Analizando frente…');
   try {
-    const img = await createImageBitmap(f);
+    ultimaImg = await createImageBitmap(f);
     const t0 = performance.now();
-    await procesar(img, img.width, img.height);
-    estado(`Completado en ${((performance.now() - t0) / 1000).toFixed(1)} s` + (sesEpp ? '' : ' · (Sin modelo EPP)'));
-  } catch (e) { estado('Error de lectura: ' + e.message); }
+    await procesar(ultimaImg, ultimaImg.width, ultimaImg.height);
+    estado(`Analizado en ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+  } catch (e) {
+    estado('No se pudo analizar la imagen: ' + e.message);
+  }
 }
-$('inCamara').onchange = desdeArchivo; $('inGaleria').onchange = desdeArchivo;
+$('inCamara').onchange = desdeArchivo;
+$('inGaleria').onchange = desdeArchivo;
 
 let vivo = false, stream = null;
 const video = $('video');
@@ -539,35 +643,50 @@ function detenerVivo() {
   vivo = false;
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
-  $('btnVivo').textContent = '🎥 En vivo'; $('btnVivo').classList.remove('activo');
+  $('btnVivo').textContent = '🎥 En vivo';
+  $('btnVivo').classList.remove('activo');
 }
 $('btnVivo').onclick = async () => {
-  if (vivo) { detenerVivo(); estado('Cámara detenida'); return; }
-  try { stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
-  } catch (e) { return estado('Error cámara. El modo en vivo requiere HTTPS.'); }
-  video.srcObject = stream; await video.play(); vivo = true;
-  $('btnVivo').textContent = '⏹️ Detener'; $('btnVivo').classList.add('activo');
-  $('panelVigia').style.display = 'none'; // Se oculta en vivo para no estorbar
+  if (vivo) { detenerVivo(); estado('Modo en vivo detenido'); return; }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false,
+    });
+  } catch (e) {
+    estado('No se pudo abrir la cámara (' + e.name + '). Usa 📷 Foto.');
+    return;
+  }
+  video.srcObject = stream;
+  await video.play();
+  vivo = true;
+  $('btnVivo').textContent = '⏹️ Detener';
+  $('btnVivo').classList.add('activo');
   while (vivo) {
     const t0 = performance.now();
     if (video.videoWidth) await procesar(video, video.videoWidth, video.videoHeight);
-    estado(`Vigilando · ${(1000 / (performance.now() - t0)).toFixed(1)} FPS`);
+    estado(`En vivo · ${(1000 / (performance.now() - t0)).toFixed(1)} img/s`);
     await new Promise((r) => setTimeout(r, 30));
   }
 };
 
-// ---------- Archivos Locales ----------
 $('inModelo').onchange = async (ev) => {
-  const f = ev.target.files[0]; ev.target.value = ''; if (!f) return;
-  estado('Procesando modelo EPP…');
+  const f = ev.target.files[0];
+  ev.target.value = '';
+  if (!f) return;
+  estado('Cargando modelo EPP…');
   try {
     const buf = await f.arrayBuffer();
     sesEpp = await crearSesion(new Uint8Array(buf));
-    eppNC = null; await dbGuardar('epp', buf);
-    actualizarInfo(); estado('Modelo cargado (disponible offline)');
-  } catch (e) { estado('Modelo inválido: ' + e.message); }
+    eppNC = null;
+    await dbGuardar('epp', buf);
+    actualizarInfo();
+  } catch (e) {
+    estado('Archivo no válido: ' + e.message);
+  }
 };
-for (const id of ['conf', 'confCoco', 'margen']) { $(id).oninput = () => { $(id + 'V').textContent = $(id).value; }; }
+for (const id of ['conf', 'confCoco', 'margen']) {
+  $(id).oninput = () => { $(id + 'V').textContent = $(id).value; };
+}
 $('clases').onchange = actualizarInfo;
 
 iniciar();

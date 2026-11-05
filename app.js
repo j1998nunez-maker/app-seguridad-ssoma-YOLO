@@ -327,13 +327,13 @@ function detectarChispas(lb, zona) {
       const idx = (sy * S + sx) * 4;
       const r = d[idx], g = d[idx + 1], b = d[idx + 2];
       // Captura chispas naranjas/amarillas intensas con alto contraste cálido
-      if (r > 220 && g > 115 && b < 115 && (r - b) > 115 && r >= g) {
+      if (r > 180 && g > 100 && (r - b) > 40) {
         chispas[y * P + x] = 1;
         puntosChispa++;
       }
     }
   }
-  if (puntosChispa >= 10) {
+  if (puntosChispa >= 6) {
     for (let i = 0; i < P * P; i++) if (chispas[i]) zona[i] = 1;
     return true;
   }
@@ -351,10 +351,10 @@ function torsoPareceCuero(pMask, lb) {
       const r = d[idx], g = d[idx + 1], b = d[idx + 2];
       tot++;
       // Rango cromático típico del cuero/descarne amarillo-ocre de soldador
-      if (r > 135 && g > 95 && b < 95 && (r - b) > 55 && r >= g * 0.9) cuero++;
+      if (r > 110 && g > 80 && (r - b) > 30 && r >= g * 0.85) cuero++;
     }
   }
-  return tot > 20 && (cuero / tot) > 0.24;
+  return tot > 20 && (cuero / tot) > 0.08;
 }
 
 const bufferZona = new Uint8Array(P * P);

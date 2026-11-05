@@ -71,26 +71,44 @@ function categoria(nombre) {
 function abrirDB() {
   return new Promise((res, rej) => {
     const r = indexedDB.open('seguridad-minera', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('modelos');
+    r.onupgradeneeded = () => {
+      if (!r.result.objectStoreNames.contains('modelos')) r.result.createObjectStore('modelos');
+    };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
   });
 }
 async function dbLeer(clave) {
+  let db;
   try {
-    const db = await abrirDB();
-    return await new Promise((res) => {
-      const q = db.transaction('modelos').objectStore('modelos').get(clave);
-      q.onsuccess = () => res(q.result || null);
-      q.onerror = () => res(null);
+    db = await abrirDB();
+    return await new Promise((res, rej) => {
+      const tx = db.transaction('modelos', 'readonly');
+      const q = tx.objectStore('modelos').get(clave);
+      let valor = null;
+      q.onsuccess = () => { valor = q.result || null; };
+      q.onerror = () => rej(q.error || new Error('No se pudo leer el modelo.'));
+      tx.oncomplete = () => res(valor);
+      tx.onerror = () => rej(tx.error || new Error('Falló la lectura de IndexedDB.'));
+      tx.onabort = () => rej(tx.error || new Error('Lectura de IndexedDB cancelada.'));
     });
-  } catch (e) { return null; }
+  } catch (e) { console.warn('IndexedDB: no se pudo leer', e); return null; }
+  finally { if (db) db.close(); }
 }
 async function dbGuardar(clave, valor) {
+  let db;
   try {
-    const db = await abrirDB();
-    db.transaction('modelos', 'readwrite').objectStore('modelos').put(valor, clave);
-  } catch (e) {}
+    db = await abrirDB();
+    await new Promise((res, rej) => {
+      const tx = db.transaction('modelos', 'readwrite');
+      tx.objectStore('modelos').put(valor, clave);
+      tx.oncomplete = () => res();
+      tx.onerror = () => rej(tx.error || new Error('Falló la escritura en IndexedDB.'));
+      tx.onabort = () => rej(tx.error || new Error('Escritura en IndexedDB cancelada.'));
+    });
+    return true;
+  } catch (e) { console.warn('IndexedDB: no se pudo guardar', e); return false; }
+  finally { if (db) db.close(); }
 }
 
 let sesCoco = null, sesEpp = null, eppNC = null;
@@ -122,7 +140,10 @@ async function iniciar() {
   }
   try {
     const r = await fetch('modelos/epp.onnx');
-    if (r.ok) sesEpp = await crearSesion(new Uint8Array(await r.arrayBuffer()));
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const buf = await r.arrayBuffer();
+    sesEpp = await crearSesion(new Uint8Array(buf));
+    await dbGuardar('epp', buf);
   } catch (e) {}
   if (!sesEpp) {
     const buf = await dbLeer('epp');
@@ -136,6 +157,7 @@ async function iniciar() {
 const cv640 = document.createElement('canvas');
 cv640.width = cv640.height = S;
 const ctx640 = cv640.getContext('2d', { willReadFrequently: true });
+const entradaFloat = new Float32Array(3 * S * S);
 
 function preparar(src, W, H) {
   const s = Math.min(S / W, S / H);
@@ -145,11 +167,11 @@ function preparar(src, W, H) {
   ctx640.fillRect(0, 0, S, S);
   ctx640.drawImage(src, 0, 0, W, H, px, py, nw, nh);
   const d = ctx640.getImageData(0, 0, S, S).data;
-  const n = S * S, f = new Float32Array(3 * n);
+  const n = S * S, f = entradaFloat;
   for (let i = 0, j = 0; i < n; i++, j += 4) {
     f[i] = d[j] / 255; f[n + i] = d[j + 1] / 255; f[2 * n + i] = d[j + 2] / 255;
   }
-  return { tensor: new ort.Tensor('float32', f, [1, 3, S, S]), raw: d, s, px, py, nw, nh, W, H };
+  return { data: f, raw: d, s, px, py, nw, nh, W, H };
 }
 
 function decodificar(t, conf, permitidas) {
@@ -236,11 +258,22 @@ function armarDeteccion(c, protos, lb, nombres) {
 }
 
 async function inferir(ses, lb, conf, permitidas, nombres) {
-  const out = await ses.run({ [ses.inputNames[0]]: lb.tensor });
-  let det = out[ses.outputNames[0]], protos = out[ses.outputNames[1]];
-  if (det.dims.length === 4) [det, protos] = [protos, det];
-  const { cands, nc } = decodificar(det, conf, permitidas);
-  return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, nombres)), nc };
+  const input = new ort.Tensor('float32', lb.data, [1, 3, S, S]);
+  let out;
+  try {
+    out = await ses.run({ [ses.inputNames[0]]: input });
+    let det = out[ses.outputNames[0]], protos = out[ses.outputNames[1]];
+    if (det.dims.length === 4) [det, protos] = [protos, det];
+    const { cands, nc } = decodificar(det, conf, permitidas);
+    return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, nombres)), nc };
+  } finally {
+    const liberados = new Set();
+    const liberar = (t) => {
+      if (t && !liberados.has(t) && typeof t.dispose === 'function') { liberados.add(t); t.dispose(); }
+    };
+    if (out) Object.values(out).forEach(liberar);
+    liberar(input);
+  }
 }
 
 // ---------- Reglas de Seguridad y Corrección de Falsos Positivos ----------
@@ -279,10 +312,12 @@ function dilatar(m, r) {
 }
 
 // Detecta haces y conos de chispas incandescentes
+const bufferChispas = new Uint8Array(P * P);
 function detectarChispas(lb, zona) {
   const d = lb.raw;
   let puntosChispa = 0;
-  const chispas = new Uint8Array(P * P);
+  const chispas = bufferChispas;
+  chispas.fill(0);
   for (let y = 1; y < P - 1; y++) {
     const sy = y * 4;
     if (sy < lb.py + 8 || sy >= lb.py + lb.nh - 8) continue;
@@ -322,9 +357,11 @@ function torsoPareceCuero(pMask, lb) {
   return tot > 20 && (cuero / tot) > 0.24;
 }
 
+const bufferZona = new Uint8Array(P * P);
 function analizar(dets, lb, margenPct) {
   const modo = petarActual();
-  const PP = P * P, zona = new Uint8Array(PP);
+  const PP = P * P, zona = bufferZona;
+  zona.fill(0);
   let hayFocoPeligro = false;
   const personasRaw = dets.filter((d) => d.cat === 'persona');
 
@@ -442,6 +479,8 @@ const vctx = vistaCanvas.getContext('2d');
 const capa = document.createElement('canvas');
 capa.width = capa.height = Q;
 const cctx = capa.getContext('2d');
+const imgCapa = cctx.createImageData(Q, Q);
+const bufferZonaHi = new Uint8Array(Q * Q);
 
 const RGB = {
   ok: [34, 197, 94], falta: [245, 158, 11], zona: [239, 68, 68], lejos: [234, 179, 8],
@@ -503,8 +542,9 @@ function dibujar(src, lb, dets, an, verMascaras) {
     if (msgs.length) alertas++;
   }
 
-  const img = cctx.createImageData(Q, Q), px = img.data;
-  const zonaHi = new Uint8Array(Q * Q);
+  const img = imgCapa, px = img.data;
+  px.fill(0);
+  const zonaHi = bufferZonaHi;
   for (let i = 0; i < Q * Q; i++) zonaHi[i] = an.zona[((i / Q | 0) >> 1) * P + ((i % Q) >> 1)];
   pintarPoligono(px, zonaHi, RGB.zona, 75, 1);
   for (const d of dets) if (d.cat === 'maquina') pintarPoligono(px, d.maskHi, RGB.maquina, 50, 1);
@@ -533,7 +573,17 @@ function dibujar(src, lb, dets, an, verMascaras) {
 }
 
 // ---------- Registro Acumulado del Turno ----------
-let registro = JSON.parse(localStorage.getItem('ssoma_turno') || '[]');
+function leerRegistroLocal() {
+  try {
+    const valor = JSON.parse(localStorage.getItem('ssoma_turno') || '[]');
+    return Array.isArray(valor) ? valor : [];
+  } catch (e) { console.warn('No se pudo restaurar el registro local.', e); return []; }
+}
+function guardarRegistroLocal() {
+  try { localStorage.setItem('ssoma_turno', JSON.stringify(registro)); return true; }
+  catch (e) { console.warn('No se pudo guardar el registro local.', e); return false; }
+}
+let registro = leerRegistroLocal();
 let ultimaInferencia = null;
 
 function renderizarRegistro() {
@@ -546,10 +596,20 @@ function renderizarRegistro() {
   });
 }
 
-$('btnGuardarRegistro').onclick = () => {
+$('btnGuardarRegistro').onclick = async () => {
   if (!ultimaInferencia) return;
   const hAct = new Date();
   const turnoStr = (hAct.getHours() >= 19 || hAct.getHours() < 7) ? 'Noche' : 'Día';
+  const gps = await new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve({ lat: 'N/D', lon: 'N/D' });
+    try {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ lat: pos.coords.latitude.toFixed(5), lon: pos.coords.longitude.toFixed(5) }),
+        () => resolve({ lat: 'N/D', lon: 'N/D' }),
+        { timeout: 3000, maximumAge: 60000 }
+      );
+    } catch (e) { resolve({ lat: 'N/D', lon: 'N/D' }); }
+  });
   const fila = {
     fecha: hAct.toLocaleDateString('es-PE'),
     hora: hAct.toLocaleTimeString('es-PE'),
@@ -558,18 +618,20 @@ $('btnGuardarRegistro').onclick = () => {
     temp_c: $('tempC').value || 'N/D',
     tag_vigia: $('tagVigia').value || 'Inspección de rutina',
     obs_voz: $('obsVoz').value || '-',
+    lat: gps.lat,
+    lon: gps.lon,
     ...ultimaInferencia
   };
   registro.push(fila);
-  localStorage.setItem('ssoma_turno', JSON.stringify(registro));
+  const persistido = guardarRegistroLocal();
   renderizarRegistro();
-  estado('Inspección guardada en el turno ✅');
+  estado(persistido ? 'Inspección guardada en el turno ✅' : 'Registro añadido, pero el almacenamiento local está lleno o no disponible.');
 };
 
 $('btnLimpiar').onclick = () => {
   if (!confirm('¿Borrar los registros acumulados de este turno?')) return;
   registro = [];
-  localStorage.removeItem('ssoma_turno');
+  try { localStorage.removeItem('ssoma_turno'); } catch (e) { console.warn('No se pudo limpiar el registro local.', e); }
   renderizarRegistro();
 };
 
@@ -581,7 +643,7 @@ $('btnCopiarReporte').onclick = () => {
 
 $('btnCsv').onclick = () => {
   if (!registro.length) { estado('Aún no hay inspecciones guardadas en el turno'); return; }
-  const cab = Object.keys(registro[0]);
+  const cab = [...new Set(registro.flatMap((r) => Object.keys(r)))];
   const csv = [cab.join(','), ...registro.map((r) => cab.map((c) => `"${String(r[c] ?? '').replace(/"/g, '""')}"`).join(','))].join('\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
@@ -594,22 +656,37 @@ $('btnMic').onclick = () => {
   if (!SR) return alert('El navegador no soporta dictado por voz.');
   const rec = new SR();
   rec.lang = 'es-PE';
-  rec.start();
-  $('btnMic').style.background = 'var(--danger)';
+  const btn = $('btnMic');
+  const restaurar = () => { btn.style.background = 'var(--panel)'; };
+  rec.onerror = (e) => {
+    restaurar();
+    const motivo = e.error === 'not-allowed' || e.error === 'service-not-allowed'
+      ? 'Permiso de micrófono denegado.'
+      : e.error === 'network' ? 'El dictado requiere conexión de red.' : `Error de dictado (${e.error || 'desconocido'}).`;
+    estado(motivo);
+  };
   rec.onresult = (e) => { $('obsVoz').value += ($('obsVoz').value ? ' ' : '') + e.results[0][0].transcript; };
-  rec.onend = () => { $('btnMic').style.background = 'var(--panel)'; };
+  rec.onend = restaurar;
+  try { rec.start(); btn.style.background = 'var(--danger)'; }
+  catch (e) { restaurar(); estado(`No se pudo iniciar el dictado (${e.name || 'error'}).`); }
 };
 
 // ---------- Proceso Principal ----------
 const snap = document.createElement('canvas');
 const sctx = snap.getContext('2d');
+let colaProcesamiento = Promise.resolve();
+function procesar(src, W0, H0) {
+  const tarea = colaProcesamiento.then(() => procesarInterno(src, W0, H0));
+  colaProcesamiento = tarea.catch(() => {});
+  return tarea;
+}
 
-async function procesar(src, W0, H0) {
+async function procesarInterno(src, W0, H0) {
   if (!sesCoco) return;
   actualizarEtiquetasKPI();
   const k = Math.min(1, 1920 / Math.max(W0, H0));
   const W = Math.round(W0 * k), H = Math.round(H0 * k);
-  snap.width = W; snap.height = H;
+  if (snap.width !== W || snap.height !== H) { snap.width = W; snap.height = H; }
   sctx.drawImage(src, 0, 0, W, H);
   const lb = preparar(snap, W, H);
 
@@ -678,12 +755,18 @@ async function desdeArchivo(ev) {
 $('inCamara').onchange = desdeArchivo;
 $('inGaleria').onchange = desdeArchivo;
 
-let vivo = false, stream = null;
+let vivo = false, stream = null, frameHandle = null, inferenciaOcupada = false;
 const video = $('video');
 function detenerVivo() {
   vivo = false;
+  if (frameHandle !== null) {
+    if (video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(frameHandle);
+    else if (!video.requestVideoFrameCallback) cancelAnimationFrame(frameHandle);
+    frameHandle = null;
+  }
   if (stream) stream.getTracks().forEach((t) => t.stop());
   stream = null;
+  video.srcObject = null;
   $('btnVivo').textContent = '🎥 En vivo';
   $('btnVivo').classList.remove('activo');
 }
@@ -697,16 +780,34 @@ $('btnVivo').onclick = async () => {
     estado('No se pudo abrir la cámara (' + e.name + '). Usa 📷 Foto.');
     return;
   }
-  video.srcObject = stream;
-  await video.play();
-  vivo = true;
-  $('btnVivo').textContent = '⏹️ Detener';
-  $('btnVivo').classList.add('activo');
-  while (vivo) {
-    const t0 = performance.now();
-    if (video.videoWidth) await procesar(video, video.videoWidth, video.videoHeight);
-    estado(`En vivo · ${(1000 / (performance.now() - t0)).toFixed(1)} img/s`);
-    await new Promise((r) => setTimeout(r, 30));
+  try {
+    video.srcObject = stream;
+    await video.play();
+    vivo = true;
+    $('btnVivo').textContent = '⏹️ Detener';
+    $('btnVivo').classList.add('activo');
+    const callback = async () => {
+      if (!vivo) return;
+      programarFrame();
+      if (inferenciaOcupada || !video.videoWidth) return;
+      inferenciaOcupada = true;
+      const t0 = performance.now();
+      try {
+        await procesar(video, video.videoWidth, video.videoHeight);
+        estado(`En vivo · ${(1000 / Math.max(1, performance.now() - t0)).toFixed(1)} cuadros/s`);
+      } catch (e) { estado(`Error durante el análisis: ${e.message}`); }
+      finally { inferenciaOcupada = false; }
+    };
+    function programarFrame() {
+      if (!vivo) return;
+      frameHandle = video.requestVideoFrameCallback
+        ? video.requestVideoFrameCallback(callback)
+        : requestAnimationFrame(callback);
+    }
+    programarFrame();
+  } catch (e) {
+    detenerVivo();
+    estado(`No se pudo iniciar la reproducción de cámara (${e.name || 'error'}).`);
   }
 };
 

@@ -28,6 +28,7 @@ const CATEGORIAS = {
   careta:      ['shield', 'face-shield', 'careta', 'welding-mask'],
   respirador:  ['respirator', 'full-face', 'mask', 'respirador'],
   maquina:     ['truck', 'excavator', 'loader', 'dozer', 'machinery', 'vehicle', 'bus', 'car', 'camion', 'maquina'],
+  sparks:      ['spark', 'chispa'],
 };
 const COCO_NOMBRES = { 0: 'person', 2: 'car', 5: 'bus', 7: 'truck' };
 const COCO_CLASES = new Set([0, 2, 5, 7]);
@@ -118,7 +119,9 @@ function crearSesion(src) {
   return ort.InferenceSession.create(src, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
 }
 function nombresEpp() {
-  return $('clases').value.split(',').map((s) => s.trim()).filter(Boolean);
+  const clases = $('clases').value.split(',').map((s) => s.trim()).filter(Boolean);
+  if (eppNC === clases.length + 1 && !clases.some((c) => categoria(c) === 'sparks')) clases.push('Sparks');
+  return clases;
 }
 function actualizarInfo() {
   const n = nombresEpp().length;
@@ -265,7 +268,9 @@ async function inferir(ses, lb, conf, permitidas, nombres) {
     let det = out[ses.outputNames[0]], protos = out[ses.outputNames[1]];
     if (det.dims.length === 4) [det, protos] = [protos, det];
     const { cands, nc } = decodificar(det, conf, permitidas);
-    return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, nombres)), nc };
+    const namesDet = nombres && cands.some((c) => c.cls === nombres.length)
+      ? [...nombres, 'Sparks'] : nombres;
+    return { dets: nms(cands, 0.5).map((c) => armarDeteccion(c, protos, lb, namesDet)), nc };
   } finally {
     const liberados = new Set();
     const liberar = (t) => {
@@ -311,35 +316,6 @@ function dilatar(m, r) {
   }
 }
 
-// Detecta haces y conos de chispas incandescentes
-const bufferChispas = new Uint8Array(P * P);
-function detectarChispas(lb, zona) {
-  const d = lb.raw;
-  let puntosChispa = 0;
-  const chispas = bufferChispas;
-  chispas.fill(0);
-  for (let y = 1; y < P - 1; y++) {
-    const sy = y * 4;
-    if (sy < lb.py + 8 || sy >= lb.py + lb.nh - 8) continue;
-    for (let x = 1; x < P - 1; x++) {
-      const sx = x * 4;
-      if (sx < lb.px + 8 || sx >= lb.px + lb.nw - 8) continue;
-      const idx = (sy * S + sx) * 4;
-      const r = d[idx], g = d[idx + 1], b = d[idx + 2];
-      // Filtro de clipping absoluto: solo píxeles casi blancos (R/G al máximo y B alto).
-      if (r > 245 && g > 230 && b > 150) {
-        chispas[y * P + x] = 1;
-        puntosChispa++;
-      }
-    }
-  }
-  if (puntosChispa >= 6) {
-    for (let i = 0; i < P * P; i++) if (chispas[i]) zona[i] = 1;
-    return true;
-  }
-  return false;
-}
-
 // Evalúa si el torso de la persona tiene color de cuero de descarne (amarillo/ocre) o casaca común
 function torsoPareceCuero(pMask, lb) {
   const d = lb.raw;
@@ -363,7 +339,17 @@ function analizar(dets, lb, margenPct) {
   const PP = P * P, zona = bufferZona;
   zona.fill(0);
   let hayFocoPeligro = false;
+  const sparks = modo === 'esmerilado' ? dets.filter((d) => d.cat === 'sparks' && d.conf > 0.30) : [];
   const personasRaw = dets.filter((d) => d.cat === 'persona');
+
+  // Prioriza Helmet y suprime No-Helmet cuando ambas cajas se superponen.
+  for (let i = dets.length - 1; i >= 0; i--) {
+    const d = dets[i];
+    if (d.cat === 'sin_casco' && dets.some((h) => h.cat === 'casco' &&
+      d.box[0] < h.box[2] && d.box[2] > h.box[0] && d.box[1] < h.box[3] && d.box[3] > h.box[1])) {
+      dets.splice(i, 1);
+    }
+  }
 
   // 1. Filtra falsos positivos de guantes:
   //    a) Elimina "Gloves" en la cabeza (ej. capucha azul)
@@ -394,14 +380,11 @@ function analizar(dets, lb, margenPct) {
     }
   }
 
-  // 2. Construye Zona de Peligro (Maquinaria o Chispas de Esmerilado)
+  // 2. Construye Zona de Peligro (maquinaria o detecciones YOLO de chispas)
   for (const d of dets) {
-    if (d.cat !== 'maquina') continue;
+    if (d.cat !== 'maquina' && !sparks.includes(d)) continue;
     hayFocoPeligro = true;
     for (let i = 0; i < PP; i++) if (d.mask[i]) zona[i] = 1;
-  }
-  if (modo === 'esmerilado' && detectarChispas(lb, zona)) {
-    hayFocoPeligro = true;
   }
   if (hayFocoPeligro) {
     const r = Math.round((margenPct / 100) * lb.W * lb.s / 4);
@@ -420,7 +403,7 @@ function analizar(dets, lb, margenPct) {
     for (let i = 0; i < PP; i++) if (p.mask[i] && zona[i]) { enZona = true; break; }
 
     const lejos = (b[3] - b[1]) < 0.14 * lb.H;
-    const tieneCasco = hay('casco', true) && !hay('sin_casco', false);
+    const tieneCasco = hay('casco', true);
     const faltaGuantes = hay('sin_guantes', false) && !hay('guantes', false);
     const faltaBotas = hay('sin_botas', false);
 
@@ -470,7 +453,7 @@ function analizar(dets, lb, margenPct) {
     });
   }
 
-  return { zona, personas };
+  return { zona, personas, sparks };
 }
 
 // ---------- Dibujo ----------
@@ -484,7 +467,7 @@ const bufferZonaHi = new Uint8Array(Q * Q);
 
 const RGB = {
   ok: [34, 197, 94], falta: [245, 158, 11], zona: [239, 68, 68], lejos: [234, 179, 8],
-  maquina: [56, 189, 248], epp: [56, 189, 248], infra: [245, 158, 11]
+  maquina: [56, 189, 248], sparks: [239, 68, 68], epp: [56, 189, 248], infra: [245, 158, 11]
 };
 const hex = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 const CAT_EPP = {
@@ -552,6 +535,7 @@ function dibujar(src, lb, dets, an, verMascaras) {
   if (verMascaras) {
     for (const d of dets) if (CAT_EPP[d.cat]) pintarPoligono(px, d.maskHi, CAT_EPP[d.cat], 150, 1);
   }
+  for (const d of an.sparks) pintarPoligono(px, d.maskHi, RGB.sparks, 190, 2);
   cctx.putImageData(img, 0, 0);
   vctx.imageSmoothingEnabled = true;
   vctx.drawImage(capa, lb.px / 2, lb.py / 2, lb.nw / 2, lb.nh / 2, 0, 0, W, H);
@@ -705,7 +689,7 @@ async function procesarInterno(src, W0, H0) {
   const n = {
     personas: an.personas.length,
     alertas,
-    en_zona: an.personas.filter((p) => p.enZona).length,
+    en_zona: an.personas.filter((p) => p.enZona).length + an.sparks.length,
     sin_casco: an.personas.filter((p) => p.sinCasco).length,
     sin_torso: an.personas.filter((p) => p.sinTorso).length,
     sin_facial: an.personas.filter((p) => p.sinFacial).length,

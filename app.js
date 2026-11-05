@@ -326,9 +326,8 @@ function detectarChispas(lb, zona) {
       if (sx < lb.px + 8 || sx >= lb.px + lb.nw - 8) continue;
       const idx = (sy * S + sx) * 4;
       const r = d[idx], g = d[idx + 1], b = d[idx + 2];
-      const luma = (r * 0.299) + (g * 0.587) + (b * 0.114);
-      // Núcleo incandescente de alta luminancia o halo naranja con dominancia roja.
-      if (luma > 230 || (luma > 160 && r > 210 && g > 120 && b < 100)) {
+      // Filtro de clipping absoluto: solo píxeles casi blancos (R/G al máximo y B alto).
+      if (r > 245 && g > 230 && b > 150) {
         chispas[y * P + x] = 1;
         puntosChispa++;
       }
